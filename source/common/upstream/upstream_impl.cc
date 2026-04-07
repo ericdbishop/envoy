@@ -2016,7 +2016,7 @@ ClusterInfoImpl::makeHeaderValidator([[maybe_unused]] Http::Protocol protocol) c
 #endif
 }
 
-std::tuple<absl::optional<double>, absl::optional<std::chrono::milliseconds>,
+std::tuple<absl::optional<double>, absl::optional<uint64_t>,
            absl::optional<uint32_t>>
 ClusterInfoImpl::getRetryBudgetParams(
     const envoy::config::cluster::v3::CircuitBreakers::Thresholds& thresholds) {
@@ -2025,15 +2025,15 @@ ClusterInfoImpl::getRetryBudgetParams(
   constexpr uint32_t default_retry_concurrency = 3;
 
   absl::optional<double> budget_percent;
-  absl::optional<std::chrono::milliseconds> budget_interval;
+  absl::optional<uint64_t> budget_interval;
   absl::optional<uint32_t> min_retry_concurrency;
   if (thresholds.has_retry_budget()) {
     // The budget_percent, budget_interval, and min_retry_concurrency values are only set if
     // there is a retry budget message set in the cluster config.
     budget_percent = PROTOBUF_GET_WRAPPED_OR_DEFAULT(thresholds.retry_budget(), budget_percent,
                                                      default_budget_percent);
-    budget_interval = std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(
-        thresholds.retry_budget(), budget_interval, default_budget_interval_ms));
+    budget_interval = PROTOBUF_GET_MS_OR_DEFAULT(
+        thresholds.retry_budget(), budget_interval, default_budget_interval_ms);
     min_retry_concurrency = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
         thresholds.retry_budget(), min_retry_concurrency, default_retry_concurrency);
   }
@@ -2095,7 +2095,7 @@ ClusterInfoImpl::ResourceManagers::load(const envoy::config::cluster::v3::Cluste
       });
 
   absl::optional<double> budget_percent;
-  absl::optional<std::chrono::milliseconds> budget_interval;
+  absl::optional<uint64_t> budget_interval;
   absl::optional<uint32_t> min_retry_concurrency;
   if (it != thresholds.cend()) {
     max_connections = PROTOBUF_GET_WRAPPED_OR_DEFAULT(*it, max_connections, max_connections);

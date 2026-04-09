@@ -190,18 +190,17 @@ private:
 
       clearRemainingGauge();
 
-      // Use the in-flight request count when budget_interval is explicitly set to 0.
-      if (budget_interval == 0) {
-        // We enforce that the retry concurrency is never allowed to go below the
-        // min_retry_concurrency, even if the configured percent of the current active requests
-        // yields a value that is smaller.
-        const uint64_t current_active = requests_.count() + pending_requests_.count();
-        return std::max<uint64_t>(budget_percent / 100.0 * current_active, min_retry_concurrency);
-      }
+      // Use the in-flight request count when budget_interval is not present.
+      uint64_t requests_for_budget = requests_.count() + pending_requests_.count();
 
-      // Retry budget implementation across a fixed window inspired by tower.rs:
-      // https://github.com/tower-rs/tower/blob/master/tower/src/retry/budget/tps_budget.rs
-      const uint64_t requests_for_budget = requestsInBudgetInterval();
+      if (budget_interval > 0) {
+        // Retry budget implementation across a fixed window inspired by tower.rs:
+        // https://github.com/tower-rs/tower/blob/master/tower/src/retry/budget/tps_budget.rs
+        requests_for_budget = requestsInBudgetInterval();
+      }
+      // We enforce that the retry concurrency is never allowed to go below the
+      // min_retry_concurrency, even if the configured percent of the current active requests yields
+      // a value that is smaller.
       return std::max<uint64_t>(budget_percent / 100.0 * requests_for_budget,
                                 min_retry_concurrency);
     }

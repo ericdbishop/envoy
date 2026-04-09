@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -143,14 +144,18 @@ private:
         const auto budget_interval_ms = std::chrono::milliseconds(budget_interval.value());
 
         main_timer_ = dispatcher_.createTimer([this, expiration_interval, budget_interval_ms]() {
+          // Schedule a function to decrement req_to_expire_ from req_in_interval_ and reset
+          // req_to_expire_ to 0, every budget_interval / 10 seconds.
           const uint64_t to_expire = req_to_expire_.exchange(0, std::memory_order_seq_cst);
 
           if (to_expire > 0) {
             // Schedule expiration in budget_interval_ms.
             auto expire_timer = dispatcher_.createTimer([this, to_expire]() {
               req_in_interval_.fetch_sub(to_expire, std::memory_order_seq_cst);
+              expire_timers_.pop_front();
             });
             expire_timer->enableTimer(budget_interval_ms);
+            expire_timers_.push_back(std::move(expire_timer));
           }
 
           main_timer_->enableTimer(expiration_interval);
@@ -230,15 +235,6 @@ private:
       }
     }
 
-    void expire() {
-      // Decrement req_to_expire_ from req_in_interval_ and reset req_to_expire_ to 0.
-      // This function is called every budget_interval / 10 seconds.
-      const uint64_t to_expire = req_to_expire_.exchange(0, std::memory_order_seq_cst);
-      if (to_expire > 0) {
-        req_in_interval_.fetch_sub(to_expire, std::memory_order_seq_cst);
-      }
-    }
-
     uint64_t requestsInBudgetInterval() { return req_in_interval_.load(std::memory_order_seq_cst); }
 
     Runtime::Loader& runtime_;
@@ -260,6 +256,7 @@ private:
     std::atomic<uint64_t> req_to_expire_;
     Event::Dispatcher& dispatcher_;
     Event::TimerPtr main_timer_;
+    std::deque<Event::TimerPtr> expire_timers_;
   };
 
   ManagedResourceImpl connections_;

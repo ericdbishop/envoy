@@ -136,19 +136,19 @@ private:
           budget_interval_key_(retry_budget_runtime_key + "budget_interval"),
           min_retry_concurrency_key_(retry_budget_runtime_key + "min_retry_concurrency"),
           requests_(requests), pending_requests_(pending_requests), remaining_(remaining),
-          budget_expiration_interval_ms_(budget_interval.has_value() ? budget_interval.value() / 10
-                                                                     : 0),
+          budget_expiration_interval_(budget_interval.has_value() ? budget_interval.value() / 10
+                                                                  : 0),
           req_in_interval_(0), req_to_expire_(0), dispatcher_(dispatcher) {
-      if (budget_expiration_interval_ms_ > 0 && budget_interval.has_value()) {
-        const auto expiration_interval = std::chrono::milliseconds(budget_expiration_interval_ms_);
+      if (budget_expiration_interval_ > 0 && budget_interval.has_value()) {
+        const auto expiration_interval_ms = std::chrono::milliseconds(budget_expiration_interval_);
 
-        // Schedule a function to decrement req_to_expire_ from req_in_interval_ and reset
-        // req_to_expire_ to 0, every budget_interval / 10 seconds.
-        main_timer_ = dispatcher_.createTimer([this, expiration_interval]() {
+        // Every budget_interval / 10 seconds, schedule a function to decrement req_to_expire_ from
+        // req_in_interval_ and reset req_to_expire_ to 0.
+        main_timer_ = dispatcher_.createTimer([this, expiration_interval_ms]() {
           scheduleExpiration();
-          main_timer_->enableTimer(expiration_interval);
+          main_timer_->enableTimer(expiration_interval_ms);
         });
-        main_timer_->enableTimer(expiration_interval);
+        main_timer_->enableTimer(expiration_interval_ms);
       }
     }
 
@@ -253,7 +253,7 @@ private:
     const ResourceLimit& pending_requests_;
     Stats::Gauge& remaining_;
 
-    const uint64_t budget_expiration_interval_ms_;
+    const uint64_t budget_expiration_interval_;
     std::atomic<uint64_t> req_in_interval_;
     std::atomic<uint64_t> req_to_expire_;
     Event::Dispatcher& dispatcher_;

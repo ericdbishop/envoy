@@ -4342,8 +4342,7 @@ public:
 
   class RetryBudgetTestClusterInfo : public ClusterInfoImpl {
   public:
-    static std::tuple<absl::optional<double>, absl::optional<std::chrono::milliseconds>,
-                      absl::optional<uint32_t>>
+    static std::tuple<absl::optional<double>, absl::optional<uint64_t>, absl::optional<uint32_t>>
     getRetryBudgetParams(
         const envoy::config::cluster::v3::CircuitBreakers::Thresholds& thresholds) {
       return ClusterInfoImpl::getRetryBudgetParams(thresholds);
@@ -4469,7 +4468,7 @@ TEST_P(ParametrizedClusterInfoImplTest, RetryBudgetDefaultPopulation) {
 
   makeCluster(yaml);
   absl::optional<double> budget_percent;
-  absl::optional<std::chrono::milliseconds> budget_interval;
+  absl::optional<uint64_t> budget_interval;
   absl::optional<uint32_t> min_retry_concurrency;
   auto threshold = cluster_config_.circuit_breakers().thresholds();
 
@@ -4482,31 +4481,31 @@ TEST_P(ParametrizedClusterInfoImplTest, RetryBudgetDefaultPopulation) {
   std::tie(budget_percent, budget_interval, min_retry_concurrency) =
       RetryBudgetTestClusterInfo::getRetryBudgetParams(threshold[1]);
   EXPECT_EQ(budget_percent, 20.0);
-  EXPECT_EQ(budget_interval, std::chrono::milliseconds(100));
+  EXPECT_EQ(budget_interval, 0UL);
   EXPECT_EQ(min_retry_concurrency, 3UL);
 
   std::tie(budget_percent, budget_interval, min_retry_concurrency) =
       RetryBudgetTestClusterInfo::getRetryBudgetParams(threshold[2]);
   EXPECT_EQ(budget_percent, 20.0);
-  EXPECT_EQ(budget_interval, std::chrono::milliseconds(100));
+  EXPECT_EQ(budget_interval, 0UL);
   EXPECT_EQ(min_retry_concurrency, 3UL);
 
   std::tie(budget_percent, budget_interval, min_retry_concurrency) =
       RetryBudgetTestClusterInfo::getRetryBudgetParams(threshold[3]);
   EXPECT_EQ(budget_percent, 42.0);
-  EXPECT_EQ(budget_interval, std::chrono::milliseconds(100));
+  EXPECT_EQ(budget_interval, 0UL);
   EXPECT_EQ(min_retry_concurrency, 3UL);
 
   std::tie(budget_percent, budget_interval, min_retry_concurrency) =
       RetryBudgetTestClusterInfo::getRetryBudgetParams(threshold[4]);
   EXPECT_EQ(budget_percent, 20.0);
-  EXPECT_EQ(budget_interval, std::chrono::milliseconds(100));
+  EXPECT_EQ(budget_interval, 0UL);
   EXPECT_EQ(min_retry_concurrency, 123UL);
 
   std::tie(budget_percent, budget_interval, min_retry_concurrency) =
       RetryBudgetTestClusterInfo::getRetryBudgetParams(threshold[5]);
   EXPECT_EQ(budget_percent, 20.0);
-  EXPECT_EQ(budget_interval, std::chrono::milliseconds(200));
+  EXPECT_EQ(budget_interval, 200UL);
   EXPECT_EQ(min_retry_concurrency, 3UL);
 }
 

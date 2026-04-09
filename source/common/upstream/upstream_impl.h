@@ -1005,8 +1005,7 @@ protected:
 
   // Gets the retry budget percent/concurrency from the circuit breaker thresholds. If the retry
   // budget message is specified, defaults will be filled in if either params are unspecified.
-  static std::tuple<absl::optional<double>, absl::optional<std::chrono::milliseconds>,
-                    absl::optional<uint32_t>>
+  static std::tuple<absl::optional<double>, absl::optional<uint64_t>, absl::optional<uint32_t>>
   getRetryBudgetParams(const envoy::config::cluster::v3::CircuitBreakers::Thresholds& thresholds);
 
 private:

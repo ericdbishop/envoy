@@ -137,15 +137,16 @@ private:
           min_retry_concurrency_key_(retry_budget_runtime_key + "min_retry_concurrency"),
           requests_(requests), pending_requests_(pending_requests), remaining_(remaining),
           budget_expiration_interval_(
-              budget_interval.has_value() ? budget_interval.value() / num_slots_ : 0),
+              budget_interval.has_value() ? budget_interval.value() / NumSlots : 0),
           req_in_interval_(0), req_to_expire_(0), dispatcher_(dispatcher) {
       if (budget_expiration_interval_ > 0 && budget_interval.has_value()) {
         const auto expiration_interval_ms = std::chrono::milliseconds(budget_expiration_interval_);
 
-        // Every budget_interval / 10 seconds, schedule a function to decrement req_to_expire_ from
-        // req_in_interval_ and reset req_to_expire_ to 0.
+        // Every budget_interval / 10 seconds, call expireRequests to decrement outdated requests
+        // from req_in_interval_, store the current value of req_to_expire_ in expireAmounts, and
+        // reset req_to_expire_ to 0.
         main_timer_ = dispatcher_.createTimer([this, expiration_interval_ms]() {
-          scheduleExpiration();
+          expireRequests();
           main_timer_->enableTimer(expiration_interval_ms);
         });
         main_timer_->enableTimer(expiration_interval_ms);
@@ -222,13 +223,13 @@ private:
       }
     }
 
-    void scheduleExpiration() {
+    void expireRequests() {
       const uint64_t to_expire = req_to_expire_.exchange(0, std::memory_order_seq_cst);
       // Add slot to the deque, even if to_expire is 0.
       expire_amounts_.push_back(to_expire);
 
       // If the deque has as many elements as the number of slots, expire the oldest slot.
-      if (expire_amounts_.size() >= num_slots_) {
+      if (expire_amounts_.size() >= NumSlots) {
         const uint64_t expired = expire_amounts_.front();
         expire_amounts_.pop_front();
         if (expired > 0) {
@@ -253,8 +254,8 @@ private:
     const ResourceLimit& pending_requests_;
     Stats::Gauge& remaining_;
 
+    static constexpr uint64_t NumSlots = 10;
     const uint64_t budget_expiration_interval_;
-    static constexpr uint64_t num_slots_ = 10;
     std::atomic<uint64_t> req_in_interval_;
     std::atomic<uint64_t> req_to_expire_;
     Event::Dispatcher& dispatcher_;

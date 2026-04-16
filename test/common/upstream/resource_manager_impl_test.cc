@@ -1,5 +1,3 @@
-#include <iostream>
-
 #include "envoy/stats/stats.h"
 #include "envoy/upstream/upstream.h"
 

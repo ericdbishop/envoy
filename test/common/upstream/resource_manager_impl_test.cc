@@ -178,7 +178,61 @@ TEST(ResourceManagerImplTest, RetryBudgetOverrideGauge) {
   rm.retries().dec();
 }
 
-TEST(ResourceManagerImplTest, RetryBudgetInterval) {
+TEST(ResourceManagerImplTest, RetryBudgetIntervalDisabled) {
+  NiceMock<Runtime::MockLoader> runtime;
+  Stats::IsolatedStoreImpl store;
+  NiceMock<Event::MockDispatcher> dispatcher;
+
+  auto stats = clusterCircuitBreakersStats(store);
+
+  // budget_interval=0 means use in-flight request count, no sliding window.
+  ResourceManagerImpl rm(runtime, "circuit_breakers.runtime_resource_manager_test.default.", 1024,
+                         0, 1024, 0, 3, 100, stats, 20.0, static_cast<uint64_t>(0),
+                         static_cast<uint32_t>(5), dispatcher);
+
+  // Expect max retries to be the min_retry_concurrency.
+  EXPECT_EQ(5U, rm.retries().max());
+
+  // Add 100 in-flight requests.
+  for (int i = 0; i < 100; i++) {
+    rm.requests().inc();
+  }
+  // max retries = 20% * 100 = 20.
+  EXPECT_EQ(20U, rm.retries().max());
+
+  // Completing 50 requests; reducing in-flight count.
+  for (int i = 0; i < 50; i++) {
+    rm.requests().dec();
+  }
+  // max retries = 20% * 50 = 10.
+  EXPECT_EQ(10U, rm.retries().max());
+
+  // Add 50 pending requests. Budget uses requests + pending as in-flight count.
+  for (int i = 0; i < 50; i++) {
+    rm.pendingRequests().inc();
+  }
+  // max retries = 20% * 100 = 20.
+  EXPECT_EQ(20U, rm.retries().max());
+
+  // Completing all remaining requests.
+  for (int i = 0; i < 50; i++) {
+    rm.pendingRequests().dec();
+    rm.requests().dec();
+  }
+  // Expect max retries to be the min_retry_concurrency.
+  EXPECT_EQ(5U, rm.retries().max());
+
+  rm.retries().inc();
+  EXPECT_EQ(1U, rm.retries().count());
+  EXPECT_TRUE(rm.retries().canCreate());
+
+  for (int i = 0; i <= 5; i++) {
+    rm.retries().inc();
+  }
+  EXPECT_FALSE(rm.retries().canCreate());
+}
+
+TEST(ResourceManagerImplTest, RetryBudgetIntervalEnabled) {
   NiceMock<Runtime::MockLoader> runtime;
   Stats::IsolatedStoreImpl store;
   NiceMock<Event::MockDispatcher> dispatcher;
@@ -187,7 +241,8 @@ TEST(ResourceManagerImplTest, RetryBudgetInterval) {
   auto stats = clusterCircuitBreakersStats(store);
 
   // budget_interval=100ms, expiration_interval = 100ms/10 = 10ms.
-  EXPECT_CALL(*main_timer, enableTimer(std::chrono::milliseconds(10), _));
+  EXPECT_CALL(*main_timer, enableTimer(std::chrono::milliseconds(10), _))
+      .Times(testing::AnyNumber());
   ResourceManagerImpl rm(runtime, "circuit_breakers.runtime_resource_manager_test.default.", 1024,
                          0, 1024, 0, 3, 100, stats, 20.0, static_cast<uint64_t>(100),
                          static_cast<uint32_t>(5), dispatcher);
@@ -198,10 +253,7 @@ TEST(ResourceManagerImplTest, RetryBudgetInterval) {
   }
   EXPECT_EQ(20U, rm.retries().max());
 
-  // Schedule expiration of the first 100 requests.
-  Event::MockTimer* expire_timer_1 = new Event::MockTimer(&dispatcher);
-  EXPECT_CALL(*expire_timer_1, enableTimer(std::chrono::milliseconds(100), _));
-  EXPECT_CALL(*main_timer, enableTimer(std::chrono::milliseconds(10), _));
+  // first callback adds the 100 requests into the deque.
   main_timer->invokeCallback();
 
   // Add 50 more requests after resetting req_to_expire_.
@@ -211,19 +263,23 @@ TEST(ResourceManagerImplTest, RetryBudgetInterval) {
   // max retries = 20% * 150 = 30.
   EXPECT_EQ(30U, rm.retries().max());
 
-  // 100 requests are expired / subtracted from req_in_interval_.
-  expire_timer_1->invokeCallback();
+  // Invoke the callback 8 times, so the deque has all 9 slots.
+  for (int i = 0; i < 8; i++) {
+    main_timer->invokeCallback();
+  }
+  EXPECT_EQ(30U, rm.retries().max());
 
+  // 100 requests are expired from the oldest slot of the deque / subtracted from req_in_interval_.
+  main_timer->invokeCallback();
+
+  // req_in_interval_ now holds 50 requests.
   // max retries = 20% * 50 = 10.
   EXPECT_EQ(10U, rm.retries().max());
 
-  // Schedule expiration of last 50 requests and fire the expire_timer.
-  Event::MockTimer* expire_timer_2 = new Event::MockTimer(&dispatcher);
-  EXPECT_CALL(*expire_timer_2, enableTimer(std::chrono::milliseconds(100), _));
-  EXPECT_CALL(*main_timer, enableTimer(std::chrono::milliseconds(10), _));
+  // Expire last 50 requests
   main_timer->invokeCallback();
-  expire_timer_2->invokeCallback();
 
+  // All requests expired. Add 10 new ones.
   for (int i = 0; i < 10; i++) {
     rm.requests().inc();
   }

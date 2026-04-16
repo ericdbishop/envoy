@@ -136,8 +136,8 @@ private:
           budget_interval_key_(retry_budget_runtime_key + "budget_interval"),
           min_retry_concurrency_key_(retry_budget_runtime_key + "min_retry_concurrency"),
           requests_(requests), pending_requests_(pending_requests), remaining_(remaining),
-          budget_expiration_interval_(budget_interval.has_value() ? budget_interval.value() / 10
-                                                                  : 0),
+          budget_expiration_interval_(
+              budget_interval.has_value() ? budget_interval.value() / num_slots_ : 0),
           req_in_interval_(0), req_to_expire_(0), dispatcher_(dispatcher) {
       if (budget_expiration_interval_ > 0 && budget_interval.has_value()) {
         const auto expiration_interval_ms = std::chrono::milliseconds(budget_expiration_interval_);
@@ -223,16 +223,17 @@ private:
     }
 
     void scheduleExpiration() {
-      const auto budget_interval_ms = std::chrono::milliseconds(budget_interval_.value());
       const uint64_t to_expire = req_to_expire_.exchange(0, std::memory_order_seq_cst);
-      if (to_expire > 0) {
-        // Schedule expiration in budget_interval_ms.
-        auto timer = dispatcher_.createTimer([this, to_expire]() {
-          req_in_interval_.fetch_sub(to_expire, std::memory_order_seq_cst);
-          expire_timers_.pop_front();
-        });
-        timer->enableTimer(budget_interval_ms);
-        expire_timers_.push_back(std::move(timer));
+      // Add slot to the deque, even if to_expire is 0.
+      expire_amounts_.push_back(to_expire);
+
+      // If the deque has as many elements as the number of slots, expire the oldest slot.
+      if (expire_amounts_.size() >= num_slots_) {
+        const uint64_t expired = expire_amounts_.front();
+        expire_amounts_.pop_front();
+        if (expired > 0) {
+          req_in_interval_.fetch_sub(expired, std::memory_order_seq_cst);
+        }
       }
     }
 
@@ -253,11 +254,12 @@ private:
     Stats::Gauge& remaining_;
 
     const uint64_t budget_expiration_interval_;
+    static constexpr uint64_t num_slots_ = 10;
     std::atomic<uint64_t> req_in_interval_;
     std::atomic<uint64_t> req_to_expire_;
     Event::Dispatcher& dispatcher_;
     Event::TimerPtr main_timer_;
-    std::deque<Event::TimerPtr> expire_timers_;
+    std::deque<uint64_t> expire_amounts_;
   };
 
   ManagedResourceImpl connections_;

@@ -135,21 +135,22 @@ private:
           budget_percent_key_(retry_budget_runtime_key + "budget_percent"),
           budget_interval_key_(retry_budget_runtime_key + "budget_interval"),
           min_retry_concurrency_key_(retry_budget_runtime_key + "min_retry_concurrency"),
-          requests_(requests), pending_requests_(pending_requests), remaining_(remaining),
-          budget_expiration_interval_(
-              budget_interval.has_value() ? budget_interval.value() / NumSlots : 0),
-          req_in_interval_(0), req_to_expire_(0), dispatcher_(dispatcher) {
-      if (budget_expiration_interval_ > 0 && budget_interval.has_value()) {
-        const auto expiration_interval_ms = std::chrono::milliseconds(budget_expiration_interval_);
+          requests_(requests), pending_requests_(pending_requests), remaining_(remaining) {
+      if (budget_interval.has_value() && budget_interval.value() > 0) {
+        interval_state_ = std::make_unique<IntervalState>();
+        interval_state_->expiration_interval = budget_interval.value() / NumSlots;
+
+        const auto expiration_interval_ms =
+            std::chrono::milliseconds(interval_state_->expiration_interval);
 
         // Every budget_interval / 10 seconds, call expireRequests to decrement outdated requests
         // from req_in_interval_, store the current value of req_to_expire_ in expireAmounts, and
         // reset req_to_expire_ to 0.
-        main_timer_ = dispatcher_.createTimer([this, expiration_interval_ms]() {
+        interval_state_->main_timer = dispatcher.createTimer([this, expiration_interval_ms]() {
           expireRequests();
-          main_timer_->enableTimer(expiration_interval_ms);
+          interval_state_->main_timer->enableTimer(expiration_interval_ms);
         });
-        main_timer_->enableTimer(expiration_interval_ms);
+        interval_state_->main_timer->enableTimer(expiration_interval_ms);
       }
     }
 
@@ -174,8 +175,11 @@ private:
       clearRemainingGauge();
     }
     void writeRequest() {
-      req_in_interval_.fetch_add(1, std::memory_order_relaxed);
-      req_to_expire_.fetch_add(1, std::memory_order_relaxed);
+      if (interval_state_ == nullptr) {
+        return;
+      }
+      interval_state_->req_in_interval.fetch_add(1, std::memory_order_relaxed);
+      interval_state_->req_to_expire.fetch_add(1, std::memory_order_relaxed);
     }
     uint64_t max() override {
       if (!useRetryBudget()) {
@@ -184,8 +188,6 @@ private:
 
       const double budget_percent = runtime_.snapshot().getDouble(
           budget_percent_key_, budget_percent_ ? *budget_percent_ : 20.0);
-      const uint64_t budget_interval = runtime_.snapshot().getInteger(
-          budget_interval_key_, budget_interval_ ? *budget_interval_ : 0);
       const uint32_t min_retry_concurrency = runtime_.snapshot().getInteger(
           min_retry_concurrency_key_, min_retry_concurrency_ ? *min_retry_concurrency_ : 3);
 
@@ -194,10 +196,14 @@ private:
       // Use the in-flight request count when budget_interval is not present.
       uint64_t requests_for_budget = requests_.count() + pending_requests_.count();
 
-      if (budget_interval > 0) {
-        // Retry budget implementation across a fixed window inspired by tower.rs:
-        // https://github.com/tower-rs/tower/blob/master/tower/src/retry/budget/tps_budget.rs
-        requests_for_budget = requestsInBudgetInterval();
+      if (interval_state_ != nullptr) {
+        const uint64_t configured_interval = runtime_.snapshot().getInteger(
+            budget_interval_key_, budget_interval_ ? *budget_interval_ : 0);
+        if (configured_interval > 0) {
+          // Retry budget implementation across a fixed window inspired by tower.rs:
+          // https://github.com/tower-rs/tower/blob/master/tower/src/retry/budget/tps_budget.rs
+          requests_for_budget = interval_state_->req_in_interval.load(std::memory_order_seq_cst);
+        }
       }
       // We enforce that the retry concurrency is never allowed to go below the
       // min_retry_concurrency, even if the configured percent of the current active requests yields
@@ -224,21 +230,21 @@ private:
     }
 
     void expireRequests() {
-      const uint64_t to_expire = req_to_expire_.exchange(0, std::memory_order_seq_cst);
+      ASSERT(interval_state_ != nullptr);
+      const uint64_t to_expire =
+          interval_state_->req_to_expire.exchange(0, std::memory_order_seq_cst);
       // Add slot to the deque, even if to_expire is 0.
-      expire_amounts_.push_back(to_expire);
+      interval_state_->expire_amounts.push_back(to_expire);
 
       // If the deque has as many elements as the number of slots, expire the oldest slot.
-      if (expire_amounts_.size() >= NumSlots) {
-        const uint64_t expired = expire_amounts_.front();
-        expire_amounts_.pop_front();
+      if (interval_state_->expire_amounts.size() >= NumSlots) {
+        const uint64_t expired = interval_state_->expire_amounts.front();
+        interval_state_->expire_amounts.pop_front();
         if (expired > 0) {
-          req_in_interval_.fetch_sub(expired, std::memory_order_seq_cst);
+          interval_state_->req_in_interval.fetch_sub(expired, std::memory_order_seq_cst);
         }
       }
     }
-
-    uint64_t requestsInBudgetInterval() { return req_in_interval_.load(std::memory_order_seq_cst); }
 
     Runtime::Loader& runtime_;
     // The max_retry resource is nested within the budget to maintain state if the retry budget is
@@ -255,12 +261,16 @@ private:
     Stats::Gauge& remaining_;
 
     static constexpr uint64_t NumSlots = 10;
-    const uint64_t budget_expiration_interval_;
-    std::atomic<uint64_t> req_in_interval_;
-    std::atomic<uint64_t> req_to_expire_;
-    Event::Dispatcher& dispatcher_;
-    Event::TimerPtr main_timer_;
-    std::deque<uint64_t> expire_amounts_;
+
+    // Allocated when budget_interval is configured.
+    struct IntervalState {
+      uint64_t expiration_interval{0};
+      std::atomic<uint64_t> req_in_interval{0};
+      std::atomic<uint64_t> req_to_expire{0};
+      Event::TimerPtr main_timer;
+      std::deque<uint64_t> expire_amounts;
+    };
+    std::unique_ptr<IntervalState> interval_state_;
   };
 
   ManagedResourceImpl connections_;
